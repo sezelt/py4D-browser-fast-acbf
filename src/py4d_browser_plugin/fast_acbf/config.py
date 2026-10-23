@@ -48,7 +48,9 @@ LABEL_TO_STATE_KEY = {
 }
 
 VALID_FOCUS_SIGNS = ("none", "overfocus", "underfocus")
-VALID_UPSCALE_METHODS = ("zero_insert", "nearest", "bilinear")
+VALID_UPSCALE_METHODS = ("zero_insert", "nearest", "bilinear", "gaussian_kde", "lanczos_kde")
+INTEGER_ONLY_UPSCALE_METHODS = ("zero_insert", "gaussian_kde", "lanczos_kde")
+KDE_UPSCALE_METHODS = ("gaussian_kde", "lanczos_kde")
 VALID_LIVE_OUTPUTS = ("None", "tcBF", "acBF", "probe", "chi")
 UPSCALE_METHOD_DEFAULTS_BY_MODE = {
     "tcbf": "zero_insert",
@@ -129,6 +131,8 @@ class FastAcbfConfig:
     pad_width: int | None = None
     upscale: float = 1.0
     upscale_method: str = "zero_insert"
+    upscale_sigma: float | None = None
+    lanczos_size: int | None = None
     eps: float = 1e-3
     rolloff: float = 0.0
     regularization: float = 1e-3
@@ -254,6 +258,8 @@ class FastAcbfConfig:
             self.normalized_pad_width(),
             round(float(self.upscale), 12),
             str(self.upscale_method),
+            None if self.upscale_sigma is None else round(float(self.upscale_sigma), 12),
+            None if self.lanczos_size is None else int(self.lanczos_size),
         )
 
     def normalized_pad_width(self) -> int | None:
@@ -315,9 +321,9 @@ class FastAcbfConfig:
             )
         if float(self.upscale) < 1.0:
             raise ValueError("Upscale must be >= 1.0.")
-        if method == "zero_insert" and not is_integer_upscale(float(self.upscale)):
+        if method in INTEGER_ONLY_UPSCALE_METHODS and not is_integer_upscale(float(self.upscale)):
             raise ValueError(
-                "Upscale method zero_insert requires an integer upscale factor. "
+                f"Upscale method {method} requires an integer upscale factor. "
                 "Use nearest or bilinear for fractional upscale."
             )
         if (
@@ -327,8 +333,24 @@ class FastAcbfConfig:
         ):
             raise ValueError(
                 "Upscale method zero_insert is only supported for tcBF. "
-                "Use nearest or bilinear when Display mode or Refinement mode is acBF."
+                "Use nearest, bilinear, gaussian_kde, or lanczos_kde when Display mode "
+                "or Refinement mode is acBF."
             )
+        if self.upscale_sigma is not None:
+            if float(self.upscale_sigma) <= 0:
+                raise ValueError(f"upscale_sigma must be positive, got {self.upscale_sigma}.")
+            if method not in KDE_UPSCALE_METHODS:
+                raise ValueError(
+                    "upscale_sigma is only used with upscale_method='gaussian_kde' "
+                    f"or 'lanczos_kde', got {method!r}."
+                )
+        if self.lanczos_size is not None:
+            if not float(self.lanczos_size).is_integer() or int(self.lanczos_size) < 1:
+                raise ValueError(f"lanczos_size must be a positive integer, got {self.lanczos_size}.")
+            if method != "lanczos_kde":
+                raise ValueError(
+                    f"lanczos_size is only used with upscale_method='lanczos_kde', got {method!r}."
+                )
 
     def coerce_upscale_method_for_mode(self) -> list[str]:
         """Coerce impossible method/mode combinations and return user-facing notes."""
@@ -339,6 +361,7 @@ class FastAcbfConfig:
             messages.append(
                 f"Unknown upscale method {method!r}; using {self.upscale_method}."
             )
+            self._drop_unused_upscale_params()
             return messages
         self.upscale_method = method
         if (
@@ -350,7 +373,15 @@ class FastAcbfConfig:
             messages.append(
                 "zero_insert is not supported for acBF; upscale method was changed to nearest."
             )
+        self._drop_unused_upscale_params()
         return messages
+
+    def _drop_unused_upscale_params(self) -> None:
+        """Clear KDE parameters that don't apply to the current upscale method."""
+        if self.upscale_method not in KDE_UPSCALE_METHODS:
+            self.upscale_sigma = None
+        if self.upscale_method != "lanczos_kde":
+            self.lanczos_size = None
 
     def defocus_search_range(self) -> tuple[float, float] | None:
         if self.defocus_range_min_angstrom is None and self.defocus_range_max_angstrom is None:
@@ -425,6 +456,8 @@ class FastAcbfConfig:
             "pad_width": self.normalized_pad_width(),
             "upscale": float(self.upscale),
             "upscale_method": str(self.upscale_method),
+            "upscale_sigma": self.upscale_sigma,
+            "lanczos_size": self.lanczos_size,
         }
         if self.mode.lower() == "acbf" or self.refinement_mode.lower() == "acbf":
             kwargs.update(

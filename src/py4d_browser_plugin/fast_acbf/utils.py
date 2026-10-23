@@ -53,6 +53,8 @@ def build_solver(config: FastAcbfConfig, data: np.ndarray, runtime_device: str):
         pad_width=config.normalized_pad_width(),
         upscale=float(config.upscale),
         upscale_method=str(config.upscale_method),
+        upscale_sigma=None if config.upscale_sigma is None else float(config.upscale_sigma),
+        lanczos_size=None if config.lanczos_size is None else int(config.lanczos_size),
     )
 
 

@@ -28,6 +28,7 @@ from ..calibration import (
 )
 from ..config import (
     FastAcbfConfig,
+    KDE_UPSCALE_METHODS,
     VALID_LIVE_OUTPUTS,
     VALID_UPSCALE_METHODS,
 )
@@ -141,6 +142,8 @@ class ConfigurationDialog(QDialog):
         self.upscale_line = self._float_line()
         self.upscale_method_combo = QComboBox()
         self.upscale_method_combo.addItems(list(VALID_UPSCALE_METHODS))
+        self.upscale_sigma_line = self._optional_float_line()
+        self.lanczos_size_line = self._optional_int_line()
         self.pad_width_line = self._optional_int_line()
         self.device_combo = QComboBox()
         self.device_combo.addItems(["auto", "cuda", "mps", "cpu"])
@@ -159,6 +162,8 @@ class ConfigurationDialog(QDialog):
         run_form.addRow("", self.new_tab_per_run_cb)
         run_form.addRow("Upscale", self.upscale_line)
         run_form.addRow("Upscale method", self.upscale_method_combo)
+        run_form.addRow("Upscale sigma", self.upscale_sigma_line)
+        run_form.addRow("Lanczos size", self.lanczos_size_line)
         run_form.addRow("Pad width", self.pad_width_line)
         run_form.addRow("Device", self.device_combo)
         run_form.addRow("Pipeline", self.cache_combo)
@@ -358,6 +363,7 @@ class ConfigurationDialog(QDialog):
         self.mode_combo.currentTextChanged.connect(self._sync_upscale_method_options)
         self.refine_mode_combo.currentTextChanged.connect(self._sync_upscale_method_options)
         self.live_output_combo.currentTextChanged.connect(self._sync_upscale_method_options)
+        self.upscale_method_combo.currentTextChanged.connect(self._sync_upscale_param_fields)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -448,6 +454,27 @@ class ConfigurationDialog(QDialog):
         if self.upscale_method_combo.currentText() == "zero_insert":
             self.upscale_method_combo.setCurrentText("nearest")
 
+    def _sync_upscale_param_fields(self, *_args) -> None:
+        """Enable the KDE parameter fields only for the methods that use them."""
+        method = self.upscale_method_combo.currentText()
+        kde_enabled = method in KDE_UPSCALE_METHODS
+        lanczos_enabled = method == "lanczos_kde"
+        self.upscale_sigma_line.setEnabled(kde_enabled)
+        self.upscale_sigma_line.setToolTip(
+            "Gaussian kernel width in upscaled pixels, used by the gaussian_kde and "
+            "lanczos_kde upscale methods. Blank = fast-acbf default (0.5 x the Upscale "
+            "factor)."
+            if kde_enabled
+            else "Only used by the gaussian_kde and lanczos_kde upscale methods."
+        )
+        self.lanczos_size_line.setEnabled(lanczos_enabled)
+        self.lanczos_size_line.setToolTip(
+            "Lanczos half-width a, i.e. the kernel is sinc(x/N) x sinc(x/(a*N)), used "
+            "only by the lanczos_kde upscale method. Blank = fast-acbf default (3)."
+            if lanczos_enabled
+            else "Only used by the lanczos_kde upscale method."
+        )
+
     # ------------------------------------------------------------------ config I/O
 
     def set_from_config(self, config: FastAcbfConfig) -> None:
@@ -469,6 +496,11 @@ class ConfigurationDialog(QDialog):
         self.frame_combo.setCurrentText(config.output_frame)
         self.upscale_line.setText(f"{config.upscale:g}")
         self.upscale_method_combo.setCurrentText(config.upscale_method)
+        self.upscale_sigma_line.setText(self._optional_float_text(config.upscale_sigma))
+        self.lanczos_size_line.setText(
+            "" if config.lanczos_size is None else str(int(config.lanczos_size))
+        )
+        self._sync_upscale_param_fields()
         pad_width = config.normalized_pad_width()
         self.pad_width_line.setText("0" if pad_width is None else str(pad_width))
         self.device_combo.setCurrentText(config.device)
@@ -573,6 +605,18 @@ class ConfigurationDialog(QDialog):
         cfg.output_frame = self.frame_combo.currentText()
         cfg.upscale = self._float(self.upscale_line, "Upscale")
         cfg.upscale_method = self.upscale_method_combo.currentText()
+        # Read KDE params only for the methods that use them so stale text in the
+        # disabled fields can't trip validation.
+        cfg.upscale_sigma = (
+            self._optional_float(self.upscale_sigma_line, "Upscale sigma")
+            if cfg.upscale_method in KDE_UPSCALE_METHODS
+            else None
+        )
+        cfg.lanczos_size = (
+            self._optional_int(self.lanczos_size_line, "Lanczos size")
+            if cfg.upscale_method == "lanczos_kde"
+            else None
+        )
         cfg.pad_width = self._optional_int(self.pad_width_line, "Pad width")
         cfg.device = self.device_combo.currentText()
         cfg.pipeline = self.cache_combo.currentText()
